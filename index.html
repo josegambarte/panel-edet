@@ -16,7 +16,7 @@
   <div id="app"></div>
 
   <script>
-    const API_URL = "https://ticse.edetsa.com/Ags/rest/services/AGOL/AGOL_OMS_PRO/MapServer/4/query?f=json&cacheHint=true&resultOffset=0&resultRecordCount=7500&where=ADMINSITRACION%3D%27CONCEPCION%27&orderByFields=CUSTOMER_COUNT%20DESC&outFields=*&returnGeometry=true&outSR=4326&spatialRel=esriSpatialRelIntersects";
+    const API_URL = "https://ticse.edetsa.com/Ags/rest/services/AGOL/AGOL_OMS_PRO/MapServer/4/query?f=json&cacheHint=false&resultOffset=0&resultRecordCount=7500&where=ADMINSITRACION%3D%27CONCEPCION%27&orderByFields=CUSTOMER_COUNT%20DESC&outFields=*&returnGeometry=true&outSR=4326&spatialRel=esriSpatialRelIntersects";
 
     const SUCURSALES = [
       { nombre: "AGUILARES", codigo: "AGU" },
@@ -29,6 +29,9 @@
 
     let incidentes = [];
     let incidenteAbierto = null;
+    let cargando = false;
+    let errorConsulta = "";
+    let ultimaActualizacion = "Sin actualizar";
 
     function normalizarSucursal(valor) {
       const sucursal = String(valor || "").trim().toUpperCase();
@@ -61,34 +64,85 @@
       return "bg-amber-100 text-amber-700 border-amber-200";
     }
 
+    function formatearHoraActual() {
+      return new Date().toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
     function consultarDatos() {
-      const callbackName = "edetCallback" + Date.now();
+      if (cargando) return;
+
+      cargando = true;
+      errorConsulta = "";
+      render();
+
+      const callbackName = "edetCallback_" + Date.now();
       const script = document.createElement("script");
-      script.src = API_URL + "&callback=" + callbackName;
+      const separador = API_URL.includes("?") ? "&" : "?";
+
+      const timeout = setTimeout(() => {
+        limpiar();
+        cargando = false;
+        errorConsulta = "La consulta no respondió. Probá actualizar de nuevo.";
+        render();
+      }, 15000);
+
+      function limpiar() {
+        clearTimeout(timeout);
+        try {
+          delete window[callbackName];
+        } catch (e) {
+          window[callbackName] = undefined;
+        }
+        if (script.parentNode) {
+          script.parentNode.removeChild(script);
+        }
+      }
 
       window[callbackName] = function(data) {
-        const features = Array.isArray(data.features) ? data.features : [];
+        try {
+          const features = Array.isArray(data.features) ? data.features : [];
 
-        incidentes = features.map((f, index) => {
-          const a = f.attributes || {};
+          incidentes = features.map((f, index) => {
+            const a = f.attributes || {};
 
-          return {
-            id: a.OBJECTID || index + 1,
-            usuarios: Number(a.CUSTOMER_COUNT || 0),
-            estado: a.STATUS || "Sin estado",
-            sucursal: normalizarSucursal(a.SUCURSAL || a.SUBSTATION || ""),
-            observacion: a.OBSERVACION_DESPACHANTE || a.COMMENTS || "Sin detalle",
-            lat: f.geometry?.y || null,
-            lng: f.geometry?.x || null,
-            raw: a,
-          };
-        });
+            return {
+              id: a.OBJECTID || a.INCIDENT_ID || a.ID || index + 1,
+              usuarios: Number(a.CUSTOMER_COUNT || 0),
+              estado: a.STATUS || a.ESTADO || "Sin estado",
+              sucursal: normalizarSucursal(a.SUCURSAL || a.Substation || a.SUBSTATION || ""),
+              observacion: a.OBSERVACION_DESPACHANTE || a.OBSERVACION || a.COMMENTS || a.DESCRIPCION || "Sin detalle",
+              lat: f.geometry?.y || null,
+              lng: f.geometry?.x || null,
+              raw: a,
+            };
+          });
 
-        render();
-        delete window[callbackName];
-        script.remove();
+          ultimaActualizacion = formatearHoraActual();
+
+          if (features.length === 0) {
+            errorConsulta = "La consulta respondió, pero no trajo incidentes activos.";
+          }
+        } catch (e) {
+          errorConsulta = "Error procesando la respuesta: " + e.message;
+        } finally {
+          cargando = false;
+          limpiar();
+          render();
+        }
       };
 
+      script.onerror = function() {
+        cargando = false;
+        limpiar();
+        errorConsulta = "No se pudo conectar con la consulta de EDET.";
+        render();
+      };
+
+      script.src = API_URL + separador + "callback=" + encodeURIComponent(callbackName) + "&_ts=" + Date.now();
       document.body.appendChild(script);
     }
 
@@ -112,7 +166,7 @@
         <div class="max-w-md mx-auto p-4 space-y-4">
 
           <div class="bg-slate-950 text-white rounded-3xl p-5 shadow-xl">
-            <div class="flex justify-between items-start">
+            <div class="flex justify-between items-start gap-3">
               <div>
                 <p class="text-yellow-300 text-sm font-semibold">⚡ EDET / OMS</p>
                 <h1 class="text-2xl font-bold mt-1">Incidentes activos</h1>
@@ -120,8 +174,9 @@
               </div>
 
               <button onclick="consultarDatos()"
-                class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-2xl text-sm">
-                Actualizar
+                class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-2xl text-sm disabled:opacity-50"
+                ${cargando ? "disabled" : ""}>
+                ${cargando ? "Actualizando..." : "Actualizar"}
               </button>
             </div>
 
@@ -136,11 +191,20 @@
                 <p class="text-2xl font-bold">${totalUsuarios}</p>
               </div>
             </div>
+
+            <p class="text-xs text-slate-500 mt-4">Última actualización: ${ultimaActualizacion}</p>
           </div>
+
+          ${errorConsulta ? `
+            <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-3xl p-4 text-sm">
+              ⚠️ ${errorConsulta}
+            </div>
+          ` : ""}
 
           <div class="bg-white rounded-3xl p-4 shadow border border-slate-200">
             <div class="flex justify-between items-center mb-4">
               <h2 class="font-bold text-slate-900">📊 Usuarios por sucursal</h2>
+              <span class="text-xs text-slate-400">Total ${totalUsuarios}</span>
             </div>
 
             <div class="h-56 flex items-end justify-between gap-2 border-b border-slate-200 pb-2">
@@ -202,9 +266,9 @@
                   ⚠️ ${i.observacion}
                 </div>
 
-                ${incidenteAbierto === i.id ? `
+                ${incidenteAbierto === String(i.id) ? `
                   <div class="mt-4 rounded-2xl border border-slate-200 p-3 text-sm space-y-2">
-                    <p><b>SET:</b> ${i.raw.Substation || i.raw.SUBSTATION || 'Sin SET'}</p>
+                    <p><b>SET:</b> ${i.raw.Substation || i.raw.SUBSTATION || i.raw.SET || 'Sin SET'}</p>
                     <p><b>Estado:</b> ${i.estado}</p>
                     <p><b>Usuarios:</b> ${i.usuarios}</p>
 
@@ -213,17 +277,18 @@
 
                       <a href="https://www.google.com/maps?q=${i.lat},${i.lng}"
                         target="_blank"
+                        onclick="event.stopPropagation()"
                         class="block text-center bg-blue-700 text-white rounded-xl py-2 font-semibold mt-3">
                         Abrir en Google Maps
                       </a>
                     ` : ''}
 
-                    <details class="mt-3 bg-slate-50 rounded-xl p-3">
+                    <details class="mt-3 bg-slate-50 rounded-xl p-3" onclick="event.stopPropagation()">
                       <summary class="font-semibold">Ver JSON original</summary>
 
                       <div class="mt-2 space-y-1 text-xs max-h-64 overflow-auto">
                         ${Object.entries(i.raw).map(([k,v]) => `
-                          <p><b>${k}:</b> ${v}</p>
+                          <p class="break-words"><b>${k}:</b> ${v}</p>
                         `).join("")}
                       </div>
                     </details>
@@ -241,6 +306,7 @@
       render();
     }
 
+    render();
     consultarDatos();
   </script>
 </body>
