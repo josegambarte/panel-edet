@@ -1,4 +1,182 @@
 <!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel EDET</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background: #f1f5f9;
+      font-family: Arial, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const API_URL = "https://ticse.edetsa.com/Ags/rest/services/AGOL/AGOL_OMS_PRO/MapServer/4/query?f=json&cacheHint=true&resultOffset=0&resultRecordCount=7500&where=ADMINSITRACION%3D%27CONCEPCION%27&orderByFields=CUSTOMER_COUNT%20DESC&outFields=*&returnGeometry=true&outSR=4326&spatialRel=esriSpatialRelIntersects";
+
+    const SUCURSALES = [
+      { nombre: "AGUILARES", codigo: "AGU" },
+      { nombre: "ALBERDI", codigo: "ALB" },
+      { nombre: "CONCEPCION", codigo: "CON" },
+      { nombre: "LA COCHA", codigo: "LCH" },
+      { nombre: "LAMADRID Y TACO RALO", codigo: "LAM" },
+      { nombre: "TACO RALO", codigo: "TR" },
+    ];
+
+    let incidentes = [];
+    let incidenteAbierto = null;
+
+    function normalizarSucursal(valor) {
+      const sucursal = String(valor || "").trim().toUpperCase();
+
+      if (sucursal.includes("J.B") || sucursal.includes("ALBERDI")) return "ALBERDI";
+      if (sucursal.includes("CONCEPC")) return "CONCEPCION";
+      if (sucursal.includes("AGUIL")) return "AGUILARES";
+      if (sucursal.includes("COCHA")) return "LA COCHA";
+      if (sucursal.includes("LAMADRID")) return "LAMADRID Y TACO RALO";
+      if (sucursal.includes("TACO RALO")) return "TACO RALO";
+
+      return sucursal || "Sin sucursal";
+    }
+
+    function barraColorPorEstado(estado) {
+      const e = String(estado || "").toUpperCase();
+
+      if (e.includes("ASIGN")) return "bg-emerald-500";
+      if (e.includes("CREADO") || e.includes("NUEVO")) return "bg-red-500";
+
+      return "bg-amber-500";
+    }
+
+    function badgeColorPorEstado(estado) {
+      const e = String(estado || "").toUpperCase();
+
+      if (e.includes("ASIGN")) return "bg-emerald-100 text-emerald-700 border-emerald-200";
+      if (e.includes("CREADO") || e.includes("NUEVO")) return "bg-red-100 text-red-700 border-red-200";
+
+      return "bg-amber-100 text-amber-700 border-amber-200";
+    }
+
+    function consultarDatos() {
+      const callbackName = "edetCallback" + Date.now();
+      const script = document.createElement("script");
+      script.src = API_URL + "&callback=" + callbackName;
+
+      window[callbackName] = function(data) {
+        const features = Array.isArray(data.features) ? data.features : [];
+
+        incidentes = features.map((f, index) => {
+          const a = f.attributes || {};
+
+          return {
+            id: a.OBJECTID || index + 1,
+            usuarios: Number(a.CUSTOMER_COUNT || 0),
+            estado: a.STATUS || "Sin estado",
+            sucursal: normalizarSucursal(a.SUCURSAL || a.SUBSTATION || ""),
+            observacion: a.OBSERVACION_DESPACHANTE || a.COMMENTS || "Sin detalle",
+            lat: f.geometry?.y || null,
+            lng: f.geometry?.x || null,
+            raw: a,
+          };
+        });
+
+        render();
+        delete window[callbackName];
+        script.remove();
+      };
+
+      document.body.appendChild(script);
+    }
+
+    function render() {
+      const totalUsuarios = incidentes.reduce((acc, i) => acc + i.usuarios, 0);
+
+      const usuariosPorSucursal = SUCURSALES.map((s) => {
+        const total = incidentes
+          .filter(i => i.sucursal === s.nombre)
+          .reduce((acc, i) => acc + i.usuarios, 0);
+
+        return {
+          ...s,
+          usuarios: total,
+        };
+      });
+
+      const maxUsuarios = Math.max(...usuariosPorSucursal.map(s => s.usuarios), 1);
+
+      document.getElementById("app").innerHTML = `
+        <div class="max-w-md mx-auto p-4 space-y-4">
+
+          <div class="bg-slate-950 text-white rounded-3xl p-5 shadow-xl">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="text-yellow-300 text-sm font-semibold">⚡ EDET / OMS</p>
+                <h1 class="text-2xl font-bold mt-1">Incidentes activos</h1>
+                <p class="text-slate-400 text-sm">Administración Concepción</p>
+              </div>
+
+              <button onclick="consultarDatos()"
+                class="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-2xl text-sm">
+                Actualizar
+              </button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 mt-5">
+              <div class="bg-white/10 rounded-2xl p-3">
+                <p class="text-xs text-slate-300">Incidentes</p>
+                <p class="text-2xl font-bold">${incidentes.length}</p>
+              </div>
+
+              <div class="bg-white/10 rounded-2xl p-3">
+                <p class="text-xs text-slate-300">Usuarios afectados</p>
+                <p class="text-2xl font-bold">${totalUsuarios}</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-3xl p-4 shadow border border-slate-200">
+            <div class="flex justify-between items-center mb-4">
+              <h2 class="font-bold text-slate-900">📊 Usuarios por sucursal</h2>
+            </div>
+
+            <div class="h-56 flex items-end justify-between gap-2 border-b border-slate-200 pb-2">
+              ${usuariosPorSucursal.map(item => {
+                const alto = item.usuarios === 0
+                  ? 0
+                  : Math.max((item.usuarios / maxUsuarios) * 100, 10);
+
+                return `
+                  <div class="flex-1 h-full flex flex-col justify-end items-center">
+                    <div class="text-xs font-bold text-slate-700 mb-1">${item.usuarios}</div>
+                    <div class="w-full max-w-10 h-full flex items-end justify-center">
+                      <div class="w-full rounded-t-xl bg-slate-900" style="height:${alto}%"></div>
+                    </div>
+                  </div>
+                `;
+              }).join("")}
+            </div>
+
+            <div class="grid grid-cols-6 gap-2 pt-2">
+              ${usuariosPorSucursal.map(item => `
+                <div class="text-center text-xs font-bold text-slate-700">
+                  ${item.codigo}
+                </div>
+              `).join("")}
+            </div>
+          </div>
+
+          ${incidentes.map(i => `
+            <div onclick="toggleDetalle('${i.id}')"
+              class="bg-white rounded-3xl overflow-hidden shadow border border-slate-200 cursor-pointer">
+
+              <div class="h-2 ${barraColorPorEstado(i.estado)}"></div>
+
+              <div class="p-4">
+                <div class="flex justify-between items-start gap-3">
                   <div>
                     <h2 class="font-bold text-slate-900 text-lg">
                       Incidente #${i.id}
